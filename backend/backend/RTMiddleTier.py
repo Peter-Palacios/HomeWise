@@ -4,6 +4,7 @@ import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 import aiohttp
+import uvicorn
 from settings import AZURE_OPENAI_WS_ENDPOINT, AZURE_OPENAI_API_KEY
 
 app = FastAPI()
@@ -118,3 +119,7 @@ async def websocket_endpoint(websocket: WebSocket):
     await asyncio.gather(fwd_task, rev_task, return_exceptions=True)
 
     # await rtc.disconnect()
+
+
+if __name__ == "__main__":
+    uvicorn.run("RTMiddleTier:app", host="0.0.0.0", port=8000, reload=True)

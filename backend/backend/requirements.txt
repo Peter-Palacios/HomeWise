@@ -1,0 +1,4 @@
+websockets
+fastapi[standard]
+aiohttp
+python-decouple
