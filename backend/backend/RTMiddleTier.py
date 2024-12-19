@@ -1,28 +1,20 @@
 import asyncio
+import base64
 import json
-from typing import Optional, Callable, Any
-import aiohttp
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
+import aiohttp
 from settings import AZURE_OPENAI_WS_ENDPOINT, AZURE_OPENAI_API_KEY
 
-#open ws connection
-
-
-
-
+app = FastAPI()
 
 class RealTimeWS:
-    def __init__(self,
-                 aoai_endpoint: str,
-                 api_key: str,
-                 model_deployment: str):
+    def __init__(self, aoai_endpoint: str, api_key: str, model_deployment: str):
         self.aoai_endpoint = aoai_endpoint
         self.api_key = api_key
         self.model_deployment = model_deployment
         self.session = None
         self.ws = None
-        self._reconnect = False
 
     async def connect(self):
         ws_url = f"{self.aoai_endpoint}/openai/realtime"
@@ -47,7 +39,7 @@ class RealTimeWS:
         self.session = None
         print("Disconnected from Azure OpenAI Realtime API")
 
-    async def send_json_message(self, msg: Any):
+    async def send_json_message(self, msg: dict):
         if self.ws and not self.ws.closed:
             await self.ws.send_json(msg)
 
@@ -78,52 +70,51 @@ class RealTimeWS:
         }
         await self.send_json_message(command)
 
-# Instantiate the RealTimeConnection
 rtc = RealTimeWS(
-    aoai_endpoint="", 
-    api_key="", 
+    aoai_endpoint=AZURE_OPENAI_WS_ENDPOINT, 
+    api_key=AZURE_OPENAI_API_KEY, 
     model_deployment="gpt-4o-realtime-preview-1001"
 )
 
-
-
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    # Accept connection from React front-end
     await websocket.accept()
-    try:
+    
+    # Connect to Azure OpenAI realtime WebSocket
+    await rtc.connect()
+    # Start the session. Set enable_input_audio_transcription to True if you want transcription.
+    await rtc.start_session(enable_input_audio_transcription=True)
+
+    async def forward(react_ws: WebSocket, azure_rtc: RealTimeWS):
+        # Forward data from React client to Azure endpoint
+        # We assume React client sends raw binary audio chunks
         while True:
+            try:
+                data = await react_ws.receive_bytes()
+            except WebSocketDisconnect:
+                print("Client disconnected from /ws")
+                break
 
-    except WebSocketDisconnect:
-        print("Client disconnected from /ws")
-    # Construct the base URL and query parameters for the realtime endpoint
+            # Convert raw audio to base64 before sending to Azure
+            base64_data = base64.b64encode(data).decode('utf-8')
+            await azure_rtc.add_user_audio(base64_data)
 
-    # async def setup_ws_connection():
-    #     ws_url = f"{AZURE_OPENAI_WS_ENDPOINT}/openai/realtime"
-    #     params = {
-    #         "api-version": "2024-10-01-preview",
-    #         "deployment": "gpt-4o-realtime-preview-1001"
-    #     }
-    #     headers = {
-    #         "api-key": AZURE_OPENAI_API_KEY
-    #     }
+    async def reverse(react_ws: WebSocket, azure_rtc: RealTimeWS):
+        # Receive responses from Azure endpoint and forward to React
+        async for msg in azure_rtc.ws:
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                await react_ws.send_text(msg.data)
+            elif msg.type == aiohttp.WSMsgType.BINARY:
+                # If Azure ever sends binary data, forward it as is
+                await react_ws.send_bytes(msg.data)
+            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                # Exit on closed or error
+                break
 
-    #     # Create a ClientSession and establish the WebSocket connection
-    #     async with aiohttp.ClientSession() as session:
-    #         async with session.ws_connect(ws_url, params=params, headers=headers) as ws:
-    #             print("WebSocket connection opened to Azure OpenAI Realtime API")
+    fwd_task = asyncio.create_task(forward(websocket, rtc))
+    rev_task = asyncio.create_task(reverse(websocket, rtc))
 
-    #             # Optionally, send a message to the server
-    #             await ws.send_json({"type": "hello", "content": "Hello from client!"})
+    await asyncio.gather(fwd_task, rev_task, return_exceptions=True)
 
-    #             # Listen for messages
-    #             async for msg in ws:
-    #                 if msg.type == aiohttp.WSMsgType.TEXT:
-    #                     print("Message received:", msg.data)
-    #                 elif msg.type == aiohttp.WSMsgType.CLOSED:
-    #                     print("WebSocket closed by the server")
-    #                     break
-    #                 elif msg.type == aiohttp.WSMsgType.ERROR:
-    #                     print("WebSocket error:", msg.data)
-    #                     break
-
-
+    # await rtc.disconnect()
